@@ -68,6 +68,10 @@ else:
 
 ALLOW_SONNET_THINKING = False
 
+# Global callback to intercept generate calls.
+# If set, generate() will call this function instead of calling litellm.completion.
+_GENERATE_CALLBACK = None
+
 if not ALLOW_SONNET_THINKING:
     logger.warning("Sonnet thinking is disabled")
 
@@ -196,6 +200,9 @@ def generate(
 
     Returns: A tuple containing the message and the cost.
     """
+    if _GENERATE_CALLBACK:
+        return _GENERATE_CALLBACK(model, messages, tools, tool_choice, **kwargs)
+
     if kwargs.get("num_retries") is None:
         kwargs["num_retries"] = DEFAULT_MAX_RETRIES
 
