@@ -1,6 +1,7 @@
 import json
 import multiprocessing
 import random
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
@@ -15,6 +16,8 @@ from tau2.data_model.simulation import (
     RunConfig,
     SimulationRun,
     UserInfo,
+    TerminationReason,
+    RewardInfo,
 )
 from tau2.data_model.tasks import Task
 from tau2.environment.environment import Environment, EnvironmentInfo
@@ -108,12 +111,13 @@ def make_run_name(config: RunConfig) -> str:
     return f"{get_now()}_{config.domain}_{agent_name}_{user_name}"
 
 
-def run_domain(config: RunConfig) -> Results:
+def run_domain(config: RunConfig, console_display: bool = True) -> Results:
     """
     Run simulations for a domain
     """
     config.validate()
-    ConsoleDisplay.display_run_config(config)
+    if console_display:
+        ConsoleDisplay.display_run_config(config)
     if config.task_set_name is None:
         task_set_name = config.domain
     else:
@@ -128,20 +132,22 @@ def run_domain(config: RunConfig) -> Results:
         total_num_tasks = len(tasks)
         tasks = [task for task in tasks if LLMGTAgent.check_valid_task(task)]
         num_tasks = len(tasks)
-        console_text = Text(
-            text=f"Running {num_tasks} out of {total_num_tasks} tasks for GT agent.",
-            style="bold green",
-        )
-        ConsoleDisplay.console.print(console_text)
+        if console_display:
+            console_text = Text(
+                text=f"Running {num_tasks} out of {total_num_tasks} tasks for GT agent.",
+                style="bold green",
+            )
+            ConsoleDisplay.console.print(console_text)
     if "solo" in config.agent:
         total_num_tasks = len(tasks)
         tasks = [task for task in tasks if LLMSoloAgent.check_valid_task(task)]
         num_tasks = len(tasks)
-        console_text = Text(
-            text=f"Running {num_tasks} out of {total_num_tasks} tasks for solo agent.",
-            style="bold green",
-        )
-        ConsoleDisplay.console.print(console_text)
+        if console_display:
+            console_text = Text(
+                text=f"Running {num_tasks} out of {total_num_tasks} tasks for solo agent.",
+                style="bold green",
+            )
+            ConsoleDisplay.console.print(console_text)
 
     num_trials = config.num_trials
     save_to = config.save_to
@@ -161,7 +167,7 @@ def run_domain(config: RunConfig) -> Results:
         max_steps=config.max_steps,
         max_errors=config.max_errors,
         save_to=save_to,
-        console_display=True,
+        console_display=console_display,
         evaluation_type=EvaluationType.ALL,
         max_concurrency=config.max_concurrency,
         seed=config.seed,
@@ -169,7 +175,8 @@ def run_domain(config: RunConfig) -> Results:
         enforce_communication_protocol=config.enforce_communication_protocol,
     )
     metrics = compute_metrics(simulation_results)
-    ConsoleDisplay.display_agent_metrics(metrics)
+    if console_display:
+        ConsoleDisplay.display_agent_metrics(metrics)
 
     return simulation_results
 
@@ -265,45 +272,47 @@ def run_tasks(
     if save_to is not None:
         # If save_to already exists, check if the user wants to resume the run.
         if save_to.exists():
-            response = (
-                ConsoleDisplay.console.input(
-                    "[yellow]File [bold]{}[/bold] already exists. Do you want to resume the run? (y/n)[/yellow] ".format(
-                        save_to
+            if console_display:
+                response = (
+                    ConsoleDisplay.console.input(
+                        "[yellow]File [bold]{}[/bold] already exists. Do you want to resume the run? (y/n)[/yellow] ".format(
+                            save_to
+                        )
                     )
+                    .lower()
+                    .strip()
                 )
-                .lower()
-                .strip()
-            )
-            if response != "y":
-                raise FileExistsError(
-                    f"File {save_to} already exists. Please delete it or use a different save_to name."
-                )
+                if response != "y":
+                    raise FileExistsError(
+                        f"File {save_to} already exists. Please delete it or use a different save_to name."
+                    )
             with open(save_to, "r") as fp:
                 prev_simulation_results = Results.model_validate_json(fp.read())
                 # Check if the run config has changed
                 if get_pydantic_hash(prev_simulation_results.info) != get_pydantic_hash(
                     simulation_results.info
                 ):
-                    diff = show_dict_diff(
-                        prev_simulation_results.info.model_dump(),
-                        simulation_results.info.model_dump(),
-                    )
-                    ConsoleDisplay.console.print(
-                        f"The run config has changed.\n\n{diff}\n\nDo you want to resume the run? (y/n)"
-                    )
-                    response = (
-                        ConsoleDisplay.console.input(
-                            "[yellow]File [bold]{}[/bold] already exists. Do you want to resume the run? (y/n)[/yellow] ".format(
-                                save_to
+                    if console_display:
+                        diff = show_dict_diff(
+                            prev_simulation_results.info.model_dump(),
+                            simulation_results.info.model_dump(),
+                        )
+                        ConsoleDisplay.console.print(
+                            f"The run config has changed.\n\n{diff}\n\nDo you want to resume the run? (y/n)"
+                        )
+                        response = (
+                            ConsoleDisplay.console.input(
+                                "[yellow]File [bold]{}[/bold] already exists. Do you want to resume the run? (y/n)[/yellow] ".format(
+                                    save_to
+                                )
                             )
+                            .lower()
+                            .strip()
                         )
-                        .lower()
-                        .strip()
-                    )
-                    if response != "y":
-                        raise ValueError(
-                            "The run config has changed. Please delete the existing file or use a different save_to name."
-                        )
+                        if response != "y":
+                            raise ValueError(
+                                "The run config has changed. Please delete the existing file or use a different save_to name."
+                            )
                 # Check if the task set has changed
                 if not all(
                     get_pydantic_hash(task) == get_pydantic_hash(prev_task)
@@ -323,11 +332,12 @@ def run_tasks(
                     ]
                 )
                 simulation_results = prev_simulation_results
-                console_text = Text(
-                    text=f"Resuming run from {len(done_runs)} runs. {len(tasks) * num_trials - len(done_runs)} runs remaining.",
-                    style="bold yellow",
-                )
-                ConsoleDisplay.console.print(console_text)
+                if console_display:
+                    console_text = Text(
+                        text=f"Resuming run from {len(done_runs)} runs. {len(tasks) * num_trials - len(done_runs)} runs remaining.",
+                        style="bold yellow",
+                    )
+                    ConsoleDisplay.console.print(console_text)
         # Create new save file
         else:
             # Check if save_to exists and create parent directories if needed
@@ -348,11 +358,12 @@ def run_tasks(
                 json.dump(ckpt, fp, indent=2)
 
     def _run(task: Task, trial: int, seed: int, progress_str: str) -> SimulationRun:
-        console_text = Text(
-            text=f"{progress_str}. Running task {task.id}, trial {trial + 1}",
-            style="bold green",
-        )
-        ConsoleDisplay.console.print(console_text)
+        if console_display:
+            console_text = Text(
+                text=f"{progress_str}. Running task {task.id}, trial {trial + 1}",
+                style="bold green",
+            )
+            ConsoleDisplay.console.print(console_text)
         try:
             simulation = run_task(
                 domain=domain,
@@ -375,18 +386,35 @@ def run_tasks(
             _save(simulation)
         except Exception as e:
             logger.error(f"Error running task {task.id}, trial {trial}: {e}")
-            raise e
+            simulation = SimulationRun(
+                id=str(uuid.uuid4()),
+                task_id=task.id,
+                timestamp=get_now(),
+                start_time=get_now(),
+                end_time=get_now(),
+                duration=0.0,
+                termination_reason=TerminationReason.AGENT_ERROR,
+                reward_info=RewardInfo(
+                    reward=0.0,
+                    info={"error": str(e)}
+                ),
+                messages=[],
+                trial=trial,
+                seed=seed,
+            )
+            _save(simulation)
         return simulation
 
     args = []
     for trial in range(num_trials):
         for i, task in enumerate(tasks):
             if (trial, task.id, seeds[trial]) in done_runs:
-                console_text = Text(
-                    text=f"Skipping task {task.id}, trial {trial} because it has already been run.",
-                    style="bold yellow",
-                )
-                ConsoleDisplay.console.print(console_text)
+                if console_display:
+                    console_text = Text(
+                        text=f"Skipping task {task.id}, trial {trial} because it has already been run.",
+                        style="bold yellow",
+                    )
+                    ConsoleDisplay.console.print(console_text)
                 continue
             progress_str = f"{i}/{len(tasks)} (trial {trial + 1}/{num_trials})"
             args.append((task, trial, seeds[trial], progress_str))
@@ -394,10 +422,11 @@ def run_tasks(
     with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
         res = list(executor.map(_run, *zip(*args)))
         simulation_results.simulations.extend(res)
-    ConsoleDisplay.console.print(
-        "\n✨ [bold green]Successfully completed all simulations![/bold green]\n"
-        "To review the simulations, run: [bold blue]tau2 view[/bold blue]"
-    )
+    if console_display:
+        ConsoleDisplay.console.print(
+            "\n✨ [bold green]Successfully completed all simulations![/bold green]\n"
+            "To review the simulations, run: [bold blue]tau2 view[/bold blue]"
+        )
     return simulation_results
 
 
@@ -481,6 +510,8 @@ def run_task(
         agent = AgentConstructor(
             tools=environment.get_tools(),
             domain_policy=environment.get_policy(),
+            llm=llm_agent,
+            llm_args=llm_args_agent,
         )
     else:
         raise ValueError(
